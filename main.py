@@ -92,38 +92,8 @@ class CustomImageFolder(ImageFolder):
         return return_list
 
 
-imagenet_dir = "Imagenet_o20"
-calltech_dir = "Imagenet_24"
-
-# Define transform for datasets
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-transform = lambda x: processor(images=x, return_tensors="pt", device=device)[
-    "pixel_values"
-].squeeze()
-
-
-# transform = transforms.Compose(
-#     [transforms.Resize((224, 224)), transforms.ToTensor()]
-# )
-
-# Test Dataset (ImageNet subset)
-test_dataset = CustomImageFolder(imagenet_dir, transform=transform)
-test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
-
-# Train Dataset (Caltech256)
-train_dataset = CustomImageFolder(calltech_dir, transform=transform)
-# Train-Val-Test split for imagenet_24
-train_size = int(0.7 * len(train_dataset))
-val_size = len(train_dataset) - train_size
-calltech_train, calltech_val = random_split(
-    train_dataset, [train_size, val_size]
-)
-train_loader = DataLoader(calltech_train, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(calltech_val, batch_size=batch_size)
-
-
 class FineTuneCLIP(LightningModule):
-    def __init__(self):
+    def __init__(self, test_dataloader):
         super(FineTuneCLIP, self).__init__()
         self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
         self.model.to(device)
@@ -133,6 +103,8 @@ class FineTuneCLIP(LightningModule):
         self.tokenizer = CLIPTokenizer.from_pretrained(
             "openai/clip-vit-base-patch32"
         )
+        self.test_dataloader = test_dataloader
+        self.test_dataset = test_dataloader.dataset
 
     def get_train_dataset(self):
         return self.trainer.train_dataloader.dataset.dataset
@@ -251,17 +223,24 @@ class FineTuneCLIP(LightningModule):
         )
         return {"test_acc": test_acc}
 
+    def on_validation_epoch_end(self) -> None:
+        print(f"Epoch: {self.trainer.current_epoch}")
+        self.trainer.test(self, dataloaders=[self.test_dataloader])
+
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=5e-5,
+            betas=(0.9, 0.98),
+            eps=1e-6,
+            weight_decay=0.2,
         )
         return optimizer
 
 
 class FineTuneCLIP_Entropy(FineTuneCLIP):
     def get_test_texts(self):
-        return test_dataset.get_texts()
+        return self.test_dataset.get_texts()
 
     def training_step(self, batch, batch_idx):
         images, labels = batch
@@ -307,41 +286,83 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
         return {"loss": final_loss}
 
 
-# Initialize the model
-# model = FineTuneCLIP()
-model = FineTuneCLIP_Entropy()
-model.to(device)
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Early stopping based on validation loss
-early_stop_callback = EarlyStopping(
-    monitor="val_loss", min_delta=0.0, patience=3, verbose=True, mode="min"
-)
-current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-csv_logger = CSVLogger("logs", name=f"fine-tune-clip_{current_time}")
-# Initialize the Model Checkpoint callback
-checkpoint_callback = ModelCheckpoint(
-    monitor="val_loss",  # Replace with your validation metric
-    mode="min",  # Mode can be 'max' or 'min' depending on the metric
-    save_top_k=1,  # Save only the best model
-    filename="{epoch}-{val_loss:.2f}",  # Filename format
-    verbose=True,  # Log when a better model is found
-)
+def tranform_function(image):
+    return processor(images=image, return_tensors="pt", device=device)[
+        "pixel_values"
+    ].squeeze()
 
-# Trainer setup
-trainer = Trainer(
-    max_epochs=30,
-    callbacks=[early_stop_callback, checkpoint_callback],
-    accelerator=device,
-    enable_progress_bar=True,
-    num_sanity_val_steps=0,
-    logger=csv_logger,
-    log_every_n_steps=10,
-)
 
-# trainer.test(model, dataloaders=[test_dataloader])
+def main():
+    imagenet_dir = "Imagenet_o20"
+    calltech_dir = "Imagenet_24"
 
-trainer.fit(model, train_loader, val_loader)
+    # Define transform for datasets
 
-trainer.test(model, dataloaders=[test_dataloader])
+    transform = transforms.Compose([tranform_function])
+
+    # transform = transforms.Compose(
+    #     [transforms.Resize((224, 224)), transforms.ToTensor()]
+    # )
+
+    # Test Dataset (ImageNet subset)
+    test_dataset = CustomImageFolder(imagenet_dir, transform=transform)
+    test_dataloader = DataLoader(test_dataset, batch_size=32, num_workers=4)
+
+    # Train Dataset (Caltech256)
+    train_dataset = CustomImageFolder(calltech_dir, transform=transform)
+    # Train-Val-Test split for imagenet_24
+    train_size = int(0.7 * len(train_dataset))
+    val_size = len(train_dataset) - train_size
+    calltech_train, calltech_val = random_split(
+        train_dataset, [train_size, val_size]
+    )
+    train_loader = DataLoader(
+        calltech_train, batch_size=batch_size, shuffle=True, num_workers=4
+    )
+    val_loader = DataLoader(calltech_val, batch_size=batch_size, num_workers=4)
+
+    # Initialize the model
+    # model = FineTuneCLIP(test_dataloader)
+    model = FineTuneCLIP_Entropy(test_dataloader)
+    model.to(device)
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    # Early stopping based on validation loss
+    early_stop_callback = EarlyStopping(
+        monitor="val_loss", min_delta=0.0, patience=3, verbose=True, mode="min"
+    )
+    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    csv_logger = CSVLogger("logs", name=f"fine-tune-clip_{current_time}")
+    # Initialize the Model Checkpoint callback
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",  # Replace with your validation metric
+        mode="min",  # Mode can be 'max' or 'min' depending on the metric
+        save_top_k=1,  # Save only the best model
+        filename="{epoch}-{val_loss:.2f}",  # Filename format
+        verbose=True,  # Log when a better model is found
+    )
+
+    # Trainer setup
+    trainer = Trainer(
+        max_epochs=30,
+        callbacks=[early_stop_callback, checkpoint_callback],
+        accelerator=device,
+        enable_progress_bar=True,
+        num_sanity_val_steps=0,
+        logger=csv_logger,
+        log_every_n_steps=10,
+    )
+
+    # trainer.test(model, dataloaders=[test_dataloader])
+
+    trainer.fit(model, train_loader, val_loader)
+
+    trainer.test(model, dataloaders=[test_dataloader])
+
+
+if __name__ == "__main__":
+    main()
