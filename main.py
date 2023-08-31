@@ -18,7 +18,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cpu"
 # device = "cuda" if torch.cuda.is_available() else "cpu"
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-device = "mps"
+# device = "mps"
 
 # device = "cpu"
 batch_size = 64
@@ -81,7 +81,7 @@ class CustomImageFolder(ImageFolder):
             return self.texts
         self.texts = []
         for class_text_label in self.class_text_labels:
-            text_feature = "A photo of a " + class_text_label
+            text_feature = BASIC_STRING + class_text_label
             self.texts.append(text_feature)
         return self.texts
 
@@ -106,12 +106,30 @@ class FineTuneCLIP(LightningModule):
         )
         self.test_dataloader = test_dataloader
         self.test_dataset = test_dataloader.dataset
+        self._val_classification_inputs = None
 
     def get_train_dataset(self):
         return self.trainer.train_dataloader.dataset.dataset
 
     def get_val_dataset(self):
         return self.trainer.val_dataloaders[0].dataset.dataset
+
+    def get_test_texts(self):
+        return self.test_dataset.get_texts()
+
+    @property
+    def val_classification_inputs(self):
+        if self._val_classification_inputs:
+            return self._val_classification_inputs
+        text_features_for_all_classes = (
+            self.trainer.val_dataloaders.dataset.dataset.get_texts()
+        )
+        self._val_classification_inputs = self.processor(
+            text=text_features_for_all_classes,
+            return_tensors="pt",
+            padding=True,
+        ).to(device)
+        return self._val_classification_inputs
 
     def get_single_text_embedding(self, text):
         inputs = self.tokenizer(text, return_tensors="pt").to(device)
@@ -177,7 +195,11 @@ class FineTuneCLIP(LightningModule):
             logger=True,
         )
 
-        probs = outputs.logits_per_image.softmax(dim=1)
+        inputs = self.val_classification_inputs
+        inputs["pixel_values"] = images
+        with torch.no_grad():
+            outputs_classification = self.model(**inputs, return_loss=False)
+        probs = outputs_classification.logits_per_image.softmax(dim=1)
         predictions = torch.argmax(probs, dim=1)
         val_acc = accuracy_score(labels.cpu(), predictions.cpu())
         # cast to float32
@@ -243,9 +265,6 @@ class FineTuneCLIP(LightningModule):
 
 
 class FineTuneCLIP_Entropy(FineTuneCLIP):
-    def get_test_texts(self):
-        return self.test_dataset.get_texts()
-
     def training_step(self, batch, batch_idx):
         images, labels = batch
         images, labels = images.to(self.device), labels.to(self.device)
@@ -269,7 +288,7 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
 
         # Step 4: Compute Entropy Loss
         softmax_output = softmax(outputs_test.logits_per_image, dim=1)
-        entropy_loss = -torch.mean(
+        entropy_loss = torch.mean(
             torch.sum(softmax_output * torch.log(softmax_output + 1e-6), dim=1)
         )
 
@@ -313,7 +332,9 @@ def main():
 
     # Test Dataset (ImageNet subset)
     test_dataset = CustomImageFolder(imagenet_dir, transform=transform)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, num_workers=4)
+    test_dataloader = DataLoader(
+        test_dataset, batch_size=32, num_workers=num_workers
+    )
 
     # Train Dataset (Caltech256)
     train_dataset = CustomImageFolder(calltech_dir, transform=transform)
@@ -324,9 +345,14 @@ def main():
         train_dataset, [train_size, val_size]
     )
     train_loader = DataLoader(
-        calltech_train, batch_size=batch_size, shuffle=True, num_workers=4
+        calltech_train,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
     )
-    val_loader = DataLoader(calltech_val, batch_size=batch_size, num_workers=4)
+    val_loader = DataLoader(
+        calltech_val, batch_size=batch_size, num_workers=num_workers
+    )
 
     # Initialize the model
     # model = FineTuneCLIP(test_dataloader)
@@ -356,7 +382,7 @@ def main():
         callbacks=[early_stop_callback, checkpoint_callback],
         accelerator=device,
         enable_progress_bar=True,
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
         logger=csv_logger,
         log_every_n_steps=10,
     )
