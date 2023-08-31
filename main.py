@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 import numpy as np
+import os
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cpu"
@@ -147,7 +148,6 @@ class FineTuneCLIP(LightningModule):
         return text_embeddings
 
     def get_single_image_embedding(self, images):
-
         # Forward pass through the model
         with torch.no_grad():
             outputs = self.model.get_image_features(images)
@@ -163,7 +163,9 @@ class FineTuneCLIP(LightningModule):
         images, labels = batch
         images, labels = images.to(self.device), labels.to(self.device)
         texts = self.get_train_dataset().get_texts_from_tensor(labels)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
+        inputs = self.processor(
+            text=texts, return_tensors="pt", padding=True
+        ).to(device)
         inputs["pixel_values"] = images
 
         outputs = self.model(**inputs, return_loss=True)
@@ -185,7 +187,9 @@ class FineTuneCLIP(LightningModule):
                 labels
             )
         )
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
+        inputs = self.processor(
+            text=texts, return_tensors="pt", padding=True
+        ).to(device)
         inputs["pixel_values"] = images
 
         with torch.no_grad():
@@ -250,7 +254,7 @@ class FineTuneCLIP(LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
             self.model.parameters(),
-            lr=5e-3,
+            lr=5e-5,
         )
         return optimizer
 
@@ -265,7 +269,9 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
 
         # Original task loss
         texts = self.get_train_dataset().get_texts_from_tensor(labels)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
+        inputs = self.processor(
+            text=texts, return_tensors="pt", padding=True
+        ).to(device)
         inputs["pixel_values"] = images
         outputs = self.model(**inputs, return_loss=True)
         original_loss = outputs.loss
@@ -327,11 +333,11 @@ checkpoint_callback = ModelCheckpoint(
 trainer = Trainer(
     max_epochs=30,
     callbacks=[early_stop_callback, checkpoint_callback],
-    accelerator="gpu",
+    accelerator=device,
     enable_progress_bar=True,
     num_sanity_val_steps=0,
     logger=csv_logger,
-    log_every_n_steps=10
+    log_every_n_steps=10,
 )
 
 # trainer.test(model, dataloaders=[test_dataloader])
