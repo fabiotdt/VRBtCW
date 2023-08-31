@@ -87,13 +87,17 @@ class CustomImageFolder(ImageFolder):
         return return_list
 
 
-imagenet_dir = "Imagenet_24"
+imagenet_dir = "Imagenet_o20"
 calltech_dir = "Calltech_24"
 
 # Define transform for datasets
-transform = transforms.Compose(
-    [transforms.Resize((224, 224)), transforms.ToTensor()]
-)
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+transform = lambda x: processor(images=x, return_tensors="pt")[
+    "pixel_values"
+].squeeze()
+# transform = transforms.Compose(
+#     [transforms.Resize((224, 224)), transforms.ToTensor()]
+# )
 
 # Test Dataset (ImageNet subset)
 test_dataset = CustomImageFolder(imagenet_dir, transform=transform)
@@ -136,11 +140,11 @@ class FineTuneCLIP(LightningModule):
         return text_embeddings
 
     def get_single_image_embedding(self, images):
-        inputs = self.processor(images=images, return_tensors="pt")
+        # inputs = self.processor(images=images, return_tensors="pt")
 
         # Forward pass through the model
         with torch.no_grad():
-            outputs = self.model.get_image_features(**inputs)
+            outputs = self.model.get_image_features(images)
         return outputs
 
     def forward(self, images, texts):
@@ -153,9 +157,8 @@ class FineTuneCLIP(LightningModule):
         images, labels = batch
         images, labels = images.to(self.device), labels.to(self.device)
         texts = self.get_train_dataset().get_texts_from_tensor(labels)
-        inputs = self.processor(
-            text=texts, images=images, return_tensors="pt", padding=True
-        )
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs["pixel_values"] = images
 
         outputs = self.model(**inputs, return_loss=True)
         loss = outputs.loss
@@ -176,9 +179,8 @@ class FineTuneCLIP(LightningModule):
                 labels
             )
         )
-        inputs = self.processor(
-            text=texts, images=images, return_tensors="pt", padding=True
-        )
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs["pixel_values"] = images
 
         with torch.no_grad():
             outputs = self.model(**inputs, return_loss=True)
