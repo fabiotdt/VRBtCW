@@ -15,6 +15,10 @@ import numpy as np
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cpu"
+# device = "cuda" if torch.cuda.is_available() else "cpu"
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# device = "cpu"
 batch_size = 64
 # Initialize an empty dictionary
 imagenet_labels_to_classes = {}
@@ -88,13 +92,15 @@ class CustomImageFolder(ImageFolder):
 
 
 imagenet_dir = "Imagenet_o20"
-calltech_dir = "Calltech_24"
+calltech_dir = "Imagenet_24"
 
 # Define transform for datasets
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-transform = lambda x: processor(images=x, return_tensors="pt")[
+transform = lambda x: processor(images=x, return_tensors="pt", device=device)[
     "pixel_values"
 ].squeeze()
+
+
 # transform = transforms.Compose(
 #     [transforms.Resize((224, 224)), transforms.ToTensor()]
 # )
@@ -119,6 +125,7 @@ class FineTuneCLIP(LightningModule):
     def __init__(self):
         super(FineTuneCLIP, self).__init__()
         self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        self.model.to(device)
         self.processor = CLIPProcessor.from_pretrained(
             "openai/clip-vit-base-patch32"
         )
@@ -133,14 +140,13 @@ class FineTuneCLIP(LightningModule):
         return self.trainer.val_dataloaders[0].dataset.dataset
 
     def get_single_text_embedding(self, text):
-        inputs = self.tokenizer(text, return_tensors="pt")
+        inputs = self.tokenizer(text, return_tensors="pt").to(device)
         # Forward pass through the model
         with torch.no_grad():
             text_embeddings = self.model.get_text_features(**inputs)
         return text_embeddings
 
     def get_single_image_embedding(self, images):
-        # inputs = self.processor(images=images, return_tensors="pt")
 
         # Forward pass through the model
         with torch.no_grad():
@@ -157,7 +163,7 @@ class FineTuneCLIP(LightningModule):
         images, labels = batch
         images, labels = images.to(self.device), labels.to(self.device)
         texts = self.get_train_dataset().get_texts_from_tensor(labels)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
         inputs["pixel_values"] = images
 
         outputs = self.model(**inputs, return_loss=True)
@@ -179,7 +185,7 @@ class FineTuneCLIP(LightningModule):
                 labels
             )
         )
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
         inputs["pixel_values"] = images
 
         with torch.no_grad():
@@ -259,7 +265,7 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
 
         # Original task loss
         texts = self.get_train_dataset().get_texts_from_tensor(labels)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(device)
         inputs["pixel_values"] = images
         outputs = self.model(**inputs, return_loss=True)
         original_loss = outputs.loss
@@ -268,7 +274,7 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
         test_texts = self.get_test_texts()
         inputs = self.processor(
             text=test_texts, return_tensors="pt", padding=True
-        )
+        ).to(device)
         inputs["pixel_values"] = images
         outputs_test = self.model(**inputs)
 
@@ -298,6 +304,9 @@ class FineTuneCLIP_Entropy(FineTuneCLIP):
 # Initialize the model
 # model = FineTuneCLIP()
 model = FineTuneCLIP_Entropy()
+model.to(device)
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Early stopping based on validation loss
 early_stop_callback = EarlyStopping(
@@ -318,11 +327,11 @@ checkpoint_callback = ModelCheckpoint(
 trainer = Trainer(
     max_epochs=30,
     callbacks=[early_stop_callback, checkpoint_callback],
-    accelerator=device,
+    accelerator="gpu",
     enable_progress_bar=True,
     num_sanity_val_steps=0,
     logger=csv_logger,
-    log_every_n_steps=10,
+    log_every_n_steps=10
 )
 
 # trainer.test(model, dataloaders=[test_dataloader])
