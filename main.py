@@ -7,7 +7,7 @@ import torch
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import accuracy_score
-from torch import nn
+from torch import nn, softmax
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
@@ -249,8 +249,55 @@ class FineTuneCLIP(LightningModule):
         return optimizer
 
 
+class FineTuneCLIP_Entropy(FineTuneCLIP):
+    def get_test_texts(self):
+        return test_dataset.get_texts()
+
+    def training_step(self, batch, batch_idx):
+        images, labels = batch
+        images, labels = images.to(self.device), labels.to(self.device)
+
+        # Original task loss
+        texts = self.get_train_dataset().get_texts_from_tensor(labels)
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs["pixel_values"] = images
+        outputs = self.model(**inputs, return_loss=True)
+        original_loss = outputs.loss
+
+        # Step 2: Get Text Features for Test Classes
+        test_texts = self.get_test_texts()
+        inputs = self.processor(
+            text=test_texts, return_tensors="pt", padding=True
+        )
+        inputs["pixel_values"] = images
+        outputs_test = self.model(**inputs)
+
+        # Step 4: Compute Entropy Loss
+        softmax_output = softmax(outputs_test.logits_per_image, dim=1)
+        entropy_loss = -torch.mean(
+            torch.sum(softmax_output * torch.log(softmax_output + 1e-6), dim=1)
+        )
+
+        # Step 5: Combine the Two Losses
+        # Assuming lambda_factor is a hyperparameter to weight the importance of the entropy loss
+        lambda_factor = 0.1
+        final_loss = original_loss + lambda_factor * entropy_loss
+
+        self.log(
+            "train_loss",
+            final_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+
+        return {"loss": final_loss}
+
+
 # Initialize the model
-model = FineTuneCLIP()
+# model = FineTuneCLIP()
+model = FineTuneCLIP_Entropy()
 
 # Early stopping based on validation loss
 early_stop_callback = EarlyStopping(
@@ -278,7 +325,7 @@ trainer = Trainer(
     log_every_n_steps=10,
 )
 
-trainer.test(model, dataloaders=[test_dataloader])
+# trainer.test(model, dataloaders=[test_dataloader])
 
 trainer.fit(model, train_loader, val_loader)
 
