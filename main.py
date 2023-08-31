@@ -33,7 +33,7 @@ with open("imagenet_class_labels.txt", "r") as f:
         value = elements[1]
         imagenet_labels_to_classes[key] = value.strip()
 
-BASIC_STRING = ""
+BASIC_STRING = "A photo of a "
 
 
 class CustomImageFolder(ImageFolder):
