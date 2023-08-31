@@ -17,7 +17,8 @@ import os
 device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cpu"
 # device = "cuda" if torch.cuda.is_available() else "cpu"
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = "mps"
 
 # device = "cpu"
 batch_size = 64
@@ -179,6 +180,8 @@ class FineTuneCLIP(LightningModule):
         probs = outputs.logits_per_image.softmax(dim=1)
         predictions = torch.argmax(probs, dim=1)
         val_acc = accuracy_score(labels.cpu(), predictions.cpu())
+        # cast to float32
+        val_acc = torch.tensor(val_acc, dtype=torch.float32).to(self.device)
         self.log(
             "val_acc",
             val_acc,
@@ -213,6 +216,7 @@ class FineTuneCLIP(LightningModule):
         predictions = torch.argmax(similarities, dim=1)
 
         test_acc = accuracy_score(labels.cpu(), predictions.cpu())
+        test_acc = torch.tensor(test_acc, dtype=torch.float32).to(self.device)
         self.log(
             "test_acc",
             test_acc,
@@ -229,7 +233,7 @@ class FineTuneCLIP(LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
-            self.model.parameters(),
+            self.model.visual_projection.parameters(),
             lr=5e-5,
             betas=(0.9, 0.98),
             eps=1e-6,
